@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GYMAPP</title>
+<style>
+.center-container {
+  display: flex;
+  flex-direction: column;      /* bottoni uno sotto l’altro */
+  justify-content: center;     /* centra verticalmente */
+  align-items: center;         /* centra orizzontalmente */
+  height: calc(100vh - 56px);  /* altezza viewport meno header */
+  gap: 20px;                   /* spazio tra i bottoni */
+}
+
+.center-container button {
+  padding: 20px 40px;          /* più grandi */
+  font-size: 20px;
+}
+:root{
+  --bg:#070607;
+  --card:#0f0f10;
+  --muted:#9a9a9a;
+  --accent:#b00020;
+  --accent-hover:#ff304f;
+  --danger:#d32f2f;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;
+  background:var(--bg);
+  color:#fff;
+  -webkit-tap-highlight-color: transparent;
+}
+header{
+  background:var(--card);
+  padding:14px;
+  text-align:center;
+  font-weight:700;
+  position:sticky; top:0; z-index:50;
+}
+.container{padding:14px;}
+
+/* inputs & buttons */
+.row{display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
+input[type="text"], input[type="number"], textarea{
+  background:#141414; border:0; padding:8px 10px; border-radius:8px; color:#fff; font-size:15px;
+  width:100%;
+}
+button{
+  background:var(--accent); color:#fff; border:0; padding:8px 10px; border-radius:8px; cursor:pointer;
+}
+small{color:var(--muted)}
+
+/* card & swipe layout */
+.list{margin-top:8px;}
+.card-wrapper{position:relative; overflow:hidden; margin-bottom:10px;}
+.card{
+  background:var(--card);
+  padding:12px;
+  border-radius:10px;
+  transform:translateX(0);
+  transition:transform 180ms ease;
+  display:flex; align-items:center; justify-content:space-between;
+  gap:10px;
+  cursor:pointer;
+}
+.card .left{flex:1}
+.card strong{display:block; font-size:16px}
+.card .meta{font-size:13px; color:var(--muted); margin-top:6px}
+.delete-bg{
+  position:absolute; right:0; top:0; bottom:0; width:90px; background:var(--danger); display:flex; align-items:center; justify-content:center;
+  border-radius:10px;
+  color:#fff; font-weight:700;
+}
+
+/* esercizi & serie */
+.card-ex{background:linear-gradient(180deg,#0f0f10,#0b0b0b); padding:12px; border-radius:10px; margin-bottom:10px;}
+.exercise-title{display:flex; justify-content:space-between; align-items:center; gap:8px}
+textarea { width:100%; margin-top:8px; padding:8px; border-radius:8px; background:#111; color:#fff; border:0; }
+.serie-div{display:flex; align-items:center; gap:8px; margin-top:8px; border-top:1px solid #151515; padding-top:8px;}
+.small-input{width:70px}
+.serie-controls{display:flex; gap:6px; align-items:center;}
+.recupero-line{margin-top:8px; color:var(--muted); display:flex; gap:8px; align-items:center;}
+.timer-ex{margin-left:8px; color:#ccc; font-weight:600;}
+
+/* responsive */
+@media(min-width:720px){
+  .container{max-width:720px; margin:0 auto}
+}
+</style>
+</head>
+<body>
+<header>GYMAPP</header>
+<div class="container" id="mainContainer"></div>
+
+<!-- breve beep (file esterno pubblico). preload per performance -->
+<audio id="alertSound" src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" preload="auto"></audio>
+
+<script>
+/* ============================
+   Dati + salvataggi
+   ============================ */
+let schede = JSON.parse(localStorage.getItem('schede')) || [];
+let allenamentiSalvati = JSON.parse(localStorage.getItem('allenamenti')) || [];
+let cronometro = null, startTime = null;
+
+/* salvataggi su localStorage */
+function salvaSchede(){ localStorage.setItem('schede', JSON.stringify(schede)); }
+function salvaAllenamenti(){ localStorage.setItem('allenamenti', JSON.stringify(allenamentiSalvati)); }
+
+/* ============================
+   Swipe helper (schede, allenamenti, storico)
+   - rimane click per open, swipe per delete
+   ============================ */
+function makeSwipeable(wrapper, onOpen, onDelete){
+  let startX=0, currentX=0, dragging=false;
+  const card = wrapper.querySelector('.card');
+  // recalc width on touchstart to support orientation changes
+  function w(){ return wrapper.offsetWidth || window.innerWidth; }
+  const DEL_BOUNDS_FACTOR = 0.3;
+  wrapper.addEventListener('touchstart', e=>{
+    if(e.touches.length!==1) return;
+    startX = e.touches[0].clientX;
+    dragging = true;
+    card.style.transition = 'none';
+  }, {passive:true});
+  wrapper.addEventListener('touchmove', e=>{
+    if(!dragging) return;
+    currentX = e.touches[0].clientX - startX;
+    if(currentX > 0) currentX = 0; // solo sinistra
+    card.style.transform = `translateX(${currentX}px)`;
+    if(Math.abs(currentX) > 10) e.preventDefault();
+  }, {passive:false});
+  wrapper.addEventListener('touchend', e=>{
+    if(!dragging) return;
+    dragging = false;
+    card.style.transition = 'transform 180ms ease';
+    const width = w();
+    if(Math.abs(currentX) > Math.round(width * DEL_BOUNDS_FACTOR)){
+      card.style.transform = `translateX(-${width}px)`;
+      setTimeout(()=> onDelete(), 180);
+    } else {
+      card.style.transform = 'translateX(0)';
+    }
+    currentX = 0;
+  });
+  // click opens
+  card.addEventListener('click', (ev)=>{
+    onOpen();
+  });
+}
+
+/* ============================
+   VIEW: Main
+   ============================ */
+function renderMain(){
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `
+    <div class="center-container">
+      <button onclick="renderSchede()">SCHEDE</button>
+      <button onclick="renderAllenamentiSalvati()">STORICO</button>
+    </div>
+  `;
+}
+renderMain();
+
+/* ============================
+   SCHEDE
+   - Enter crea nuova scheda
+   - swipe delete su card
+   - click card apre allenamenti
+   ============================ */
+function renderSchede(){
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `
+    <div class="row">
+      <button onclick="renderMain()">Indietro</button>
+      <input id="nomeScheda" type="text" placeholder="Nuova scheda — premi Invio per creare">
+    </div>
+    <div class="list" id="schedeList"></div>
+  `;
+  const input = document.getElementById('nomeScheda');
+  input.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') aggiungiScheda(); });
+  renderListaSchede();
+}
+function renderListaSchede(){
+  const list = document.getElementById('schedeList');
+  list.innerHTML = '';
+  schede.forEach((s,i)=>{
+    const wrapper = document.createElement('div'); wrapper.className = 'card-wrapper';
+    wrapper.innerHTML = `<div class="delete-bg">Elimina</div>
+      <div class="card"><div class="left"><strong>${escapeHtml(s.nome)}</strong><div class="meta">${(s.allenamenti?.length||0)} allenamenti</div></div></div>`;
+    list.appendChild(wrapper);
+    makeSwipeable(wrapper, ()=>renderAllenamenti(i), ()=>{
+      if(confirm('Cancellare scheda?')){ schede.splice(i,1); salvaSchede(); renderListaSchede(); } else { renderListaSchede(); }
+    });
+  });
+}
+function aggiungiScheda(){
+  const nome = document.getElementById('nomeScheda').value.trim();
+  if(!nome) return alert('Inserisci un nome');
+  schede.push({nome, allenamenti:[]});
+  document.getElementById('nomeScheda').value='';
+  salvaSchede();
+  renderListaSchede();
+}
+
+/* ============================
+   ALLENAMENTI
+   - Enter crea nuovo allenamento
+   - swipe delete su card
+   - click card apre esercizi
+   - layout: Indietro (top-left), Avvia / Salva (riga sotto), poi input per nuovo esercizio riga sotto
+   ============================ */
+function renderAllenamenti(indexScheda){
+  const scheda = schede[indexScheda];
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `
+    <div class="row">
+      <button onclick="renderSchede()">Indietro</button>
+    </div>
+    <div class="row">
+      <input id="nomeAllenamento" type="text" placeholder="Nuovo allenamento — premi Invio per creare">
+    </div>
+    <h3 style="margin-top:8px">${escapeHtml(scheda.nome)}</h3>
+    <div class="list" id="allenamentiList"></div>
+  `;
+  document.getElementById('nomeAllenamento').addEventListener('keydown', (e)=>{ if(e.key==='Enter') aggiungiAllenamento(indexScheda); });
+  renderListaAllenamenti(indexScheda);
+}
+function renderListaAllenamenti(indexScheda){
+  const list = document.getElementById('allenamentiList');
+  list.innerHTML = '';
+  (schede[indexScheda].allenamenti || []).forEach((a,i)=>{
+    const wrapper = document.createElement('div'); wrapper.className='card-wrapper';
+    wrapper.innerHTML = `<div class="delete-bg">Elimina</div>
+      <div class="card"><div class="left"><strong>${escapeHtml(a.nome)}</strong><div class="meta">${(a.esercizi?.length||0)} esercizi</div></div></div>`;
+    list.appendChild(wrapper);
+    makeSwipeable(wrapper, ()=>renderEsercizi(indexScheda,i), ()=>{
+      if(confirm('Cancellare allenamento?')){ schede[indexScheda].allenamenti.splice(i,1); salvaSchede(); renderListaAllenamenti(indexScheda); } else { renderListaAllenamenti(indexScheda); }
+    });
+  });
+}
+function aggiungiAllenamento(indexScheda){
+  const nome = document.getElementById('nomeAllenamento').value.trim();
+  if(!nome) return alert('Inserisci un nome allenamento');
+  schede[indexScheda].allenamenti.push({nome, esercizi:[]});
+  document.getElementById('nomeAllenamento').value='';
+  salvaSchede();
+  renderListaAllenamenti(indexScheda);
+}
+
+/* ============================
+   ESERCIZI
+   - Enter crea esercizio
+   - esercizi hanno tasto "Elimina"
+   - recupero spostato sotto le note (MM:SS) e comune a tutte le serie
+   - quando si spunta una serie parte il recupero dell'esercizio (countdown visibile)
+   ============================ */
+function renderEsercizi(indexScheda, indexAll){
+  const a = schede[indexScheda].allenamenti[indexAll];
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `
+    <div class="row">
+      <button onclick="renderAllenamenti(${indexScheda})">Indietro</button>
+    </div>
+    <div class="row">
+      <button onclick="startCronometro()">Avvia Allenamento</button>
+      <button onclick="salvaAllenamento(${indexScheda},${indexAll})">Salva Allenamento</button>
+    </div>
+    <div class="row">
+      <input id="nomeEsercizio" type="text" placeholder="Nuovo esercizio — premi Invio per creare">
+    </div>
+    <div style="margin-top:8px">Tempo: <span id="timerTotale">0:00</span></div>
+    <div id="eserciziList"></div>
+  `;
+  document.getElementById('nomeEsercizio').addEventListener('keydown', (e)=>{ if(e.key==='Enter') aggiungiEsercizio(indexScheda,indexAll); });
+  renderListaEsercizi(indexScheda,indexAll);
+}
+
+function aggiungiEsercizio(indexScheda,indexAll){
+  const nome = document.getElementById('nomeEsercizio').value.trim();
+  if(!nome) return alert('Inserisci un nome esercizio');
+  // default recupero = 60s (1:00) per comodità
+  schede[indexScheda].allenamenti[indexAll].esercizi.push({nome, note:'', serie:1, reps:0, peso:0, recupero:60, fatte:[false], _recTimerId:null, _recRemaining:0});
+  document.getElementById('nomeEsercizio').value='';
+  salvaSchede();
+  renderListaEsercizi(indexScheda,indexAll);
+}
+
+function renderListaEsercizi(indexScheda,indexAll){
+  const container = document.getElementById('eserciziList');
+  container.innerHTML = '';
+  const esercizi = schede[indexScheda].allenamenti[indexAll].esercizi || [];
+  esercizi.forEach((e,ie)=>{
+    const card = document.createElement('div'); card.className='card-ex';
+    card.innerHTML = `
+      <div class="exercise-title">
+        <div><strong>${escapeHtml(e.nome)}</strong></div>
+        <div><button onclick="cancellaEsercizio(${indexScheda},${indexAll},${ie})">Elimina</button></div>
+      </div>
+      <textarea placeholder="Note">${escapeHtml(e.note || '')}</textarea>
+      <div class="recupero-line">
+        <div>Recupero:</div>
+        <input class="small-input" id="rec-${indexScheda}-${indexAll}-${ie}" type="text" value="${formatMMSS(e.recupero)}">
+        <div class="timer-ex" id="rec-timer-${indexScheda}-${indexAll}-${ie}"></div>
+      </div>
+      <div id="serieContainer-${indexScheda}-${indexAll}-${ie}"></div>
+    `;
+    container.appendChild(card);
+
+    // note live update
+    const ta = card.querySelector('textarea');
+    ta.addEventListener('input', ()=>{ e.note = ta.value; salvaSchede(); });
+
+    // recupero change (MM:SS)
+    const recInput = document.getElementById(`rec-${indexScheda}-${indexAll}-${ie}`);
+    recInput.addEventListener('change', ()=>{
+      const parsed = parseMMSS(recInput.value);
+      e.recupero = parsed;
+      salvaSchede();
+      // if running timer, update remaining to new value
+      if(e._recTimerId){ e._recRemaining = parsed; updateRecTimerDisplay(indexScheda,indexAll,ie); }
+    });
+
+    renderSerie(e,indexScheda,indexAll,ie);
+  });
+}
+
+function cancellaEsercizio(indexScheda,indexAll,ie){
+  if(confirm('Cancellare esercizio?')){
+    const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+    // clear any running interval
+    if(e && e._recTimerId) { clearInterval(e._recTimerId); e._recTimerId = null; }
+    schede[indexScheda].allenamenti[indexAll].esercizi.splice(ie,1);
+    salvaSchede();
+    renderListaEsercizi(indexScheda,indexAll);
+  }
+}
+
+/* render serie: reps/peso modificabili vicino alla serie; serie + / - buttons */
+function renderSerie(e,indexScheda,indexAll,ie){
+  const cont = document.getElementById(`serieContainer-${indexScheda}-${indexAll}-${ie}`);
+  cont.innerHTML = '';
+  for(let s=0;s<e.serie;s++){
+    const div = document.createElement('div'); div.className = 'serie-div';
+    div.innerHTML = `
+      <input type="checkbox" ${e.fatte[s] ? 'checked' : ''} onchange="toggleSerie(${indexScheda},${indexAll},${ie},${s})">
+      <div class="serie-controls">Reps: <input class="small-input" type="number" min="0" value="${e.reps}" onchange="aggiornaReps(${indexScheda},${indexAll},${ie},${s},this.value)"></div>
+      <div class="serie-controls">Peso: <input class="small-input" type="number" min="0" value="${e.peso}" onchange="aggiornaPeso(${indexScheda},${indexAll},${ie},${s},this.value)"></div>
+    `;
+    cont.appendChild(div);
+  }
+  // controls to add/remove series (single per exercise)
+  const controls = document.createElement('div');
+  controls.style.marginTop = '8px';
+  controls.innerHTML = `<button onclick="aggiungiSerie(${indexScheda},${indexAll},${ie})">+Serie</button>
+                        <button onclick="rimuoviSerie(${indexScheda},${indexAll},${ie})">−Serie</button>`;
+  cont.appendChild(controls);
+}
+
+function aggiungiSerie(indexScheda,indexAll,ie){
+  const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+  e.serie = (e.serie || 1) + 1;
+  e.fatte = e.fatte || [];
+  e.fatte.push(false);
+  salvaSchede();
+  renderListaEsercizi(indexScheda,indexAll);
+}
+function rimuoviSerie(indexScheda,indexAll,ie){
+  const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+  if(!e || (e.serie || 1) <= 1) return;
+  e.serie = e.serie - 1;
+  e.fatte = e.fatte.slice(0, e.serie);
+  salvaSchede();
+  renderListaEsercizi(indexScheda,indexAll);
+}
+
+function aggiornaReps(indexScheda,indexAll,ie,s,val){ schede[indexScheda].allenamenti[indexAll].esercizi[ie].reps = parseInt(val)||0; salvaSchede(); }
+function aggiornaPeso(indexScheda,indexAll,ie,s,val){ schede[indexScheda].allenamenti[indexAll].esercizi[ie].peso = parseInt(val)||0; salvaSchede(); }
+
+/* Quando si spunta una serie => parte il recupero relativo all'esercizio */
+function toggleSerie(indexScheda,indexAll,ie,s){
+  const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+  e.fatte[s] = !e.fatte[s];
+  salvaSchede();
+  // start recovery timer for this exercise (single timer per exercise)
+  if(e.fatte[s] && e.recupero > 0){
+    startExerciseRecovery(indexScheda,indexAll,ie);
+  }
+}
+
+/* Recovery per esercizio: mostra countdown sotto esercizio, suona alla fine */
+function startExerciseRecovery(indexScheda,indexAll,ie){
+  const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+  // clear existing
+  if(e._recTimerId) { clearInterval(e._recTimerId); e._recTimerId = null; }
+  e._recRemaining = e.recupero; // seconds
+  updateRecTimerDisplay(indexScheda,indexAll,ie);
+  const audio = document.getElementById('alertSound');
+  e._recTimerId = setInterval(()=>{
+    e._recRemaining--;
+    updateRecTimerDisplay(indexScheda,indexAll,ie);
+    if(e._recRemaining <= 0){
+      clearInterval(e._recTimerId);
+      e._recTimerId = null;
+      // play sound (user interaction should have happened)
+      try{ audio.currentTime = 0; audio.play(); }catch(err){}
+      // clear display after 1s
+      setTimeout(()=>{ updateRecTimerDisplay(indexScheda,indexAll,ie); }, 1000);
+    }
+  },1000);
+}
+
+function updateRecTimerDisplay(indexScheda,indexAll,ie){
+  const e = schede[indexScheda].allenamenti[indexAll].esercizi[ie];
+  const span = document.getElementById(`rec-timer-${indexScheda}-${indexAll}-${ie}`);
+  if(!span) return;
+  if(e._recTimerId && typeof e._recRemaining === 'number'){
+    span.textContent = 'Recupero: ' + formatMMSS(e._recRemaining);
+  } else {
+    span.textContent = '';
+  }
+}
+
+/* ============================
+   Cronometro globale
+   ============================ */
+function startCronometro(){
+  startTime = Date.now();
+  if(cronometro) clearInterval(cronometro);
+  cronometro = setInterval(()=>{
+    const t = document.getElementById('timerTotale');
+    if(t){
+      const diff = Math.floor((Date.now() - startTime) / 1000);
+      t.textContent = formatMMSS(diff);
+    }
+  }, 1000);
+}
+function stopCronometro(){ if(cronometro) clearInterval(cronometro); cronometro = null; }
+
+/* ============================
+   Salva allenamento (checks reset)
+   - calcolo durata, volume totale, serie completate
+   - copia nello storico
+   ============================ */
+function salvaAllenamento(indexScheda, indexAll){
+  stopCronometro();
+  const a = schede[indexScheda].allenamenti[indexAll];
+  const durata = Math.floor(((startTime? Date.now() - startTime : 0)) / 1000) || 0;
+  let volume = 0, serieCompletate = 0, totaleSerie = 0;
+  a.esercizi.forEach(e=>{
+    const serieCount = e.serie || 0;
+    totaleSerie += serieCount;
+    for(let i=0;i<serieCount;i++){
+      volume += (e.reps || 0) * (e.peso || 0);
+      if(e.fatte && e.fatte[i]) serieCompletate++;
+    }
+    // reset checks
+    e.fatte = Array(serieCount).fill(false);
+    // clear any running rec timer
+    if(e._recTimerId){ clearInterval(e._recTimerId); e._recTimerId = null; e._recRemaining = 0; }
+  });
+  const copia = JSON.parse(JSON.stringify(a));
+  copia.data = new Date().toLocaleString();
+  copia.durata = durata;
+  copia.volume = volume;
+  copia.serieCompletate = serieCompletate;
+  copia.totaleSerie = totaleSerie;
+  allenamentiSalvati.push(copia);
+  salvaAllenamenti();
+  salvaSchede();
+  alert('Allenamento salvato!');
+  renderEsercizi(indexScheda, indexAll);
+}
+
+/* ============================
+   STORICO (lista) + dettaglio cliccabile + swipe to delete
+   - click card apre dettagli
+   - swipe cancella
+   ============================ */
+function renderAllenamentiSalvati(){
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `<div class="row"><button onclick="renderMain()">Indietro</button></div><div class="list" id="storicoList"></div>`;
+  const list = document.getElementById('storicoList');
+  list.innerHTML = '';
+  allenamentiSalvati.forEach((a,i)=>{
+    const wrapper = document.createElement('div'); wrapper.className = 'card-wrapper';
+    wrapper.innerHTML = `<div class="delete-bg">Elimina</div>
+      <div class="card"><div class="left"><strong>${escapeHtml(a.nome)}</strong><div class="meta">Durata: ${formatMMSS(a.durata)} — Volume: ${a.volume} — Serie: ${a.serieCompletate} — ${escapeHtml(a.data)}</div></div></div>`;
+    list.appendChild(wrapper);
+    // open = visualizza dettaglio storico
+    makeSwipeable(wrapper, ()=>visualizzaAllenamento(i), ()=>{
+      if(confirm('Eliminare allenamento salvato?')){ allenamentiSalvati.splice(i,1); salvaAllenamenti(); renderAllenamentiSalvati(); } else { renderAllenamentiSalvati(); }
+    });
+  });
+}
+
+/* dettaglio storico*/
+function visualizzaAllenamento(i){
+  const a = allenamentiSalvati[i];
+  const c = document.getElementById('mainContainer');
+  c.innerHTML = `
+    <div class="row"><button onclick="renderAllenamentiSalvati()">Indietro</button></div>
+    <h3>${escapeHtml(a.nome)} — ${escapeHtml(a.data)}</h3>
+    <div>Durata: ${formatMMSS(a.durata)}</div>
+    <div>Volume totale: ${a.volume}</div>
+    <div>Serie completate: ${a.serieCompletate}</div>
+    <div id="esList"></div>
+  `;
+  const esList = document.getElementById('esList');
+  a.esercizi.forEach(e=>{
+    const div = document.createElement('div'); div.className='card-ex';
+    div.innerHTML = `<strong>${escapeHtml(e.nome)}</strong><div>Note: ${escapeHtml(e.note||'')}</div><div>Serie: ${e.serie}, Reps: ${e.reps}, Peso: ${e.peso}, Rec: ${formatMMSS(e.recupero)}</div>`;
+    esList.appendChild(div);
+  });
+}
+
+
+
+/* ============================
+   Helpers
+   ============================ */
+function formatMMSS(sec){
+  sec = parseInt(sec) || 0;
+  const m = Math.floor(sec/60);
+  const s = sec % 60;
+  return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+function parseMMSS(str){
+  if(!str) return 0;
+  const parts = String(str).split(':').map(p=>parseInt(p)||0);
+  if(parts.length === 1) return parts[0];
+  return parts[0]*60 + parts[1];
+}
+/* basic escaping for innerHTML insertion of user text */
+function escapeHtml(s){
+  return String(s || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+/* ============================
+   Init empty data if not present
+   ============================ */
+if(!localStorage.getItem('schede')){ schede = []; salvaSchede(); }
+if(!localStorage.getItem('allenamenti')){ allenamentiSalvati = []; salvaAllenamenti(); }
+</script>
+</body>
+</html>
